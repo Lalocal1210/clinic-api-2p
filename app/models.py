@@ -41,10 +41,6 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
-    # Relaciones adicionales
-    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
-    settings = relationship("UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan")
-
 # --- Modelo de Pacientes ---
 class Patient(Base):
     __tablename__ = "patients"
@@ -65,6 +61,7 @@ class Patient(Base):
     appointments = relationship("Appointment", back_populates="patient", cascade="all, delete-orphan")
     medical_notes = relationship("MedicalNote", back_populates="patient", cascade="all, delete-orphan")
     vital_signs = relationship("VitalSign", back_populates="patient", cascade="all, delete-orphan")
+    files = relationship("MedicalFile", back_populates="patient", cascade="all, delete-orphan")
 
 # --- Modelo de Direcciones ---
 class Address(Base):
@@ -76,8 +73,6 @@ class Address(Base):
     postal_code = Column(String(20), nullable=True)
     country = Column(String(100), default='México')
     address_type = Column(String(50), default='home')
-    
-    # Relación con Paciente
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     patient = relationship("Patient", back_populates="addresses")
 
@@ -93,19 +88,13 @@ class AppointmentStatus(Base):
 class Appointment(Base):
     __tablename__ = "appointments"
     id = Column(Integer, primary_key=True, index=True)
-    
-    # Claves Foráneas
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     status_id = Column(Integer, ForeignKey("appointment_status.id"), nullable=False, default=1)
-
-    # Datos de la Cita
     appointment_date = Column(TIMESTAMP(timezone=True), nullable=False)
     reason = Column(Text, nullable=True)
     notes = Column(Text, nullable=True) 
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
-
-    # Relaciones
     patient = relationship("Patient", back_populates="appointments")
     doctor = relationship("User", foreign_keys=[doctor_id]) 
     status = relationship("AppointmentStatus", back_populates="appointments")
@@ -114,18 +103,12 @@ class Appointment(Base):
 class MedicalNote(Base):
     __tablename__ = "medical_notes"
     id = Column(Integer, primary_key=True, index=True)
-    
-    # Claves Foráneas
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True)
-
-    # Datos de la Nota
     title = Column(String(100), nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
-
-    # Relaciones
     patient = relationship("Patient", back_populates="medical_notes")
     doctor = relationship("User", foreign_keys=[doctor_id])
     appointment = relationship("Appointment")
@@ -134,69 +117,52 @@ class MedicalNote(Base):
 class VitalSign(Base):
     __tablename__ = "vital_signs"
     id = Column(Integer, primary_key=True, index=True)
-    
-    # Claves Foráneas
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    
-    # Datos de los Signos
     type_name = Column(String(100), nullable=False)
     value = Column(String(50), nullable=False)
     unit = Column(String(50), nullable=True) 
     measured_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
-
-    # Relaciones
     patient = relationship("Patient", back_populates="vital_signs")
     doctor = relationship("User", foreign_keys=[doctor_id])
 
-# --- Modelos de Notificaciones y Configuración (NUEVOS) ---
+# --- Modelo de Archivos Médicos (Fotos) ---
+class MedicalFile(Base):
+    __tablename__ = "medical_files"
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    uploader_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    file_path = Column(String(255), nullable=False) 
+    description = Column(String(255), nullable=True)
+    uploaded_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    patient = relationship("Patient", back_populates="files")
+    uploader = relationship("User", foreign_keys=[uploader_id])
+
+# --- Modelo de Tipos de Notificación (¡El que faltaba!) ---
 class NotificationType(Base):
-    """
-    Modelo para la tabla 'notification_types'.
-    Ej: 'Recordatorio de Cita', 'Alerta Médica'
-    """
     __tablename__ = "notification_types"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False)
     description = Column(Text, nullable=True)
-    notifications = relationship("Notification", back_populates="notification_type", cascade="all, delete-orphan")
 
+# --- Modelo de Notificaciones (¡El que faltaba!) ---
 class Notification(Base):
-    """
-    Modelo para la tabla 'notifications'.
-    Una notificación específica para un usuario.
-    """
     __tablename__ = "notifications"
     id = Column(Integer, primary_key=True, index=True)
-    
-    # Claves Foráneas
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     type_id = Column(Integer, ForeignKey("notification_types.id"), nullable=False)
-    
-    # Datos de la Notificación
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
-    
-    # Relaciones
-    user = relationship("User", back_populates="notifications")
-    notification_type = relationship("NotificationType", back_populates="notifications")
+    user = relationship("User", foreign_keys=[user_id])
+    notification_type = relationship("NotificationType")
 
+# --- Modelo de Configuración de Usuario (¡El que faltaba!) ---
 class UserSettings(Base):
-    """
-    Modelo para la tabla 'user_settings'.
-    Preferencias de la app para un usuario.
-    """
     __tablename__ = "user_settings"
     id = Column(Integer, primary_key=True, index=True)
-    
-    # Relación uno-a-uno con User
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
-    
-    # Preferencias
     dark_mode = Column(Boolean, default=False)
     language = Column(String(10), default='es')
     notifications_enabled = Column(Boolean, default=True)
-    
-    # Relaciones
-    user = relationship("User", back_populates="settings")
+    user = relationship("User")
