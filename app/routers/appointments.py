@@ -1,12 +1,13 @@
 # --- app/routers/appointments.py ---
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import List
 
 # Importamos todo lo necesario
 from .. import models, schemas
-from ..database import SessionLocal
+from ..database import SessionLocal, engine
 # Importamos TODOS nuestros "guardias" de seguridad
 from .users import (
     get_current_user,
@@ -17,7 +18,7 @@ from .users import (
 router = APIRouter(
     prefix="/appointments",
     tags=["Appointments"]
-    # ¡OJO! No ponemos una dependencia global
+    # No ponemos una dependencia global
     # porque este router tiene permisos MIXTOS.
 )
 
@@ -80,28 +81,32 @@ def read_my_appointments(
     # Buscamos las citas que le pertenecen a este paciente
     appointments = db.query(models.Appointment).filter(
         models.Appointment.patient_id == current_user.patient_profile.id
-    ).all()
+    ).order_by(models.Appointment.appointment_date.desc()).all()
     
     return appointments
 
 # 5. Endpoint para que MÉDICOS/ADMINS vean TODAS las citas
-@router.get("/all", response_model=List[schemas.Appointment])
-def read_all_appointments(
-    db: Session = Depends(get_db),
+@router.get(
+    "/all", 
+    response_model=List[schemas.Appointment],
     # ¡Protegido! Solo médicos o admins.
-    current_user: models.User = Depends(get_current_medico_or_admin_user)
+    dependencies=[Depends(get_current_medico_or_admin_user)]
+)
+def read_all_appointments(
+    db: Session = Depends(get_db)
 ):
     """
     Obtiene una lista de TODAS las citas del sistema.
     Solo accesible para roles 'medico' o 'admin'.
     """
-    appointments = db.query(models.Appointment).all()
+    appointments = db.query(models.Appointment).order_by(models.Appointment.appointment_date.desc()).all()
     return appointments
-# 6. Endpoint para ACTUALIZAR una cita
+
+# 6. Endpoint para ACTUALIZAR una cita (permisos mixtos)
 @router.put("/{appointment_id}", response_model=schemas.Appointment)
 def update_appointment(
     appointment_id: int,
-    appointment_in: schemas.AppointmentUpdate, # Usamos el nuevo schema
+    appointment_in: schemas.AppointmentUpdate, # Usamos el schema de actualización
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -111,19 +116,17 @@ def update_appointment(
     - Médicos/Admins: Pueden actualizar cualquier cita.
     """
     
-    # 1. Busca la cita en la BBDD
     db_appointment = db.query(models.Appointment).filter(
         models.Appointment.id == appointment_id
     ).first()
     
-    # 2. Si no existe, 404
     if db_appointment is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Cita no encontrada."
         )
         
-    # 3. Lógica de Permisos
+    # Lógica de Permisos
     is_admin_or_medico = current_user.role.name in ("admin", "medico")
     is_patient_owner = (
         current_user.patient_profile and 
@@ -136,7 +139,7 @@ def update_appointment(
             detail="No tienes permisos para modificar esta cita."
         )
 
-    # 4. Actualiza los datos
+    # Actualiza los datos
     update_data = appointment_in.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(db_appointment, key, value)
@@ -145,7 +148,7 @@ def update_appointment(
     db.refresh(db_appointment)
     return db_appointment
 
-# 7. Endpoint para ELIMINAR una cita
+# 7. Endpoint para ELIMINAR una cita (permisos mixtos)
 @router.delete("/{appointment_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_appointment(
     appointment_id: int,
@@ -158,19 +161,17 @@ def delete_appointment(
     - Médicos/Admins: Pueden eliminar cualquier cita.
     """
     
-    # 1. Busca la cita
     db_appointment = db.query(models.Appointment).filter(
         models.Appointment.id == appointment_id
     ).first()
     
-    # 2. Si no existe, 404
     if db_appointment is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Cita no encontrada."
         )
         
-    # 3. Lógica de Permisos (idéntica a la de actualizar)
+    # Lógica de Permisos (idéntica a la de actualizar)
     is_admin_or_medico = current_user.role.name in ("admin", "medico")
     is_patient_owner = (
         current_user.patient_profile and 
@@ -183,8 +184,82 @@ def delete_appointment(
             detail="No tienes permisos para eliminar esta cita."
         )
         
-    # 4. Elimina la cita
     db.delete(db_appointment)
     db.commit()
     
     return None # HTTP 204 No Content
+
+# 8. Endpoint (Médico) para CAMBIAR EL ESTADO de una cita (¡ACTUALIZADO!)
+@router.patch(
+    "/{appointment_id}/status", 
+    response_model=schemas.Appointment,
+    # ¡Protegido! Solo médicos o admins
+    dependencies=[Depends(get_current_medico_or_admin_user)] 
+)
+def update_appointment_status(
+    appointment_id: int,
+    status_in: schemas.AppointmentStatusUpdate, # Usamos el schema actualizado
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_medico_or_admin_user) # Obtenemos al médico
+):
+    """
+    Actualiza el estado de una cita (ej. pendiente -> confirmada).
+    Si se cancela (ID 4), se debe incluir un 'cancellation_reason'.
+    ¡Envía una notificación automática al paciente!
+    """
+    
+    # 1. Busca la cita
+    db_appointment = db.query(models.Appointment).filter(
+        models.Appointment.id == appointment_id
+    ).first()
+    
+    if db_appointment is None:
+        raise HTTPException(status_code=404, detail="Cita no encontrada.")
+        
+    # 2. Verifica que el nuevo status_id sea válido
+    db_status = db.query(models.AppointmentStatus).filter(
+        models.AppointmentStatus.id == status_in.status_id
+    ).first()
+    
+    if db_status is None:
+        raise HTTPException(status_code=400, detail=f"El ID de estado '{status_in.status_id}' no es válido.")
+
+    # 3. ¡Lógica de Negocio!
+    # Si el nuevo estado es "cancelada" (ID 4), exige un motivo.
+    if status_in.status_id == 4 and not status_in.cancellation_reason:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Se requiere un 'cancellation_reason' para cancelar una cita."
+        )
+
+    # 4. Actualiza la cita
+    db_appointment.status_id = status_in.status_id
+    notification_message = ""
+    # Asumimos que el tipo 1='Recordatorio', 2='Resultado/Aviso', 3='Mensaje Médico'
+    notification_type = 1 
+    
+    if status_in.status_id == 2: # 2 = Confirmada
+        db_appointment.cancellation_reason = None # Borra el motivo si se re-confirma
+        notification_message = f"¡Buenas noticias! Tu cita para '{db_appointment.reason}' ha sido confirmada por el Dr. {current_user.full_name}."
+        notification_type = 2
+        
+    elif status_in.status_id == 4: # 4 = Cancelada
+        db_appointment.cancellation_reason = status_in.cancellation_reason
+        notification_message = f"Tu cita para '{db_appointment.reason}' ha sido cancelada. Motivo: {status_in.cancellation_reason}"
+        notification_type = 3
+
+    db.commit()
+
+    # 5. ¡Crea la Notificación Automática!
+    # (Solo si se confirmó o canceló y si el paciente tiene una cuenta de usuario)
+    if (status_in.status_id == 2 or status_in.status_id == 4) and db_appointment.patient.user_id:
+        new_notification = models.Notification(
+            user_id=db_appointment.patient.user_id,
+            type_id=notification_type,
+            message=notification_message
+        )
+        db.add(new_notification)
+        db.commit() # Guarda la notificación
+
+    db.refresh(db_appointment)
+    return db_appointment

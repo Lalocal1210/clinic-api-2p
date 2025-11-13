@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from typing import List
 
 # Importamos todo lo necesario (con importaciones relativas)
 from .. import models, schemas, security
@@ -19,7 +20,7 @@ router = APIRouter(
     tags=["Users"]    # Los agrupa como "Users" en los /docs
 )
 
-# 3. Dependencia para la BBDD (la copiamos de auth.py)
+# 3. Dependencia para la BBDD
 def get_db():
     db = SessionLocal()
     try:
@@ -49,7 +50,15 @@ def get_current_user(
         )
     
     # Busca al usuario en la BBDD usando el email (el 'sub' del token)
-    user = db.query(models.User).filter(models.User.email == payload.get("sub")).first()
+    user_email = payload.get("sub")
+    if user_email is None:
+         raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token inválido (no contiene 'sub')",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = db.query(models.User).filter(models.User.email == user_email).first()
     
     if user is None:
         # Si el usuario del token ya no existe
@@ -76,8 +85,22 @@ def read_users_me(
     """
     return current_user
 
+# 6. Endpoint Público para ver Médicos (¡NUEVO!)
+@router.get(
+    "/doctors", 
+    response_model=List[schemas.User],
+    # ¡OJO! Este endpoint es público a propósito
+    # para que los pacientes puedan ver la lista ANTES de agendar.
+)
+def get_doctors_list(db: Session = Depends(get_db)):
+    """
+    Obtiene una lista pública de todos los médicos (role_id=2).
+    """
+    doctors = db.query(models.User).filter(models.User.role_id == 2).all()
+    return doctors
+
 # -------------------------------------
-# NUEVO: DEPENDENCIAS DE AUTORIZACIÓN (ROLES)
+# 7. DEPENDENCIAS DE AUTORIZACIÓN (ROLES)
 # -------------------------------------
 
 def get_current_admin_user(

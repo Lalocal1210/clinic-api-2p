@@ -21,7 +21,7 @@ router = APIRouter(
     prefix="/patients",
     tags=["Patients"],
     # Protegemos TODOS los endpoints en este archivo con esta dependencia
-    # Solo "medico" o "admin" pueden usar los endpoints de /patients
+    # Solo "medico" o "admin" pueden gestionar pacientes
     dependencies=[Depends(get_current_medico_or_admin_user)]
 )
 
@@ -37,9 +37,9 @@ def get_db():
 UPLOAD_DIRECTORY = "static/uploads"
 
 
-# -----------------
-# 4. CRUD de Pacientes
-# -----------------
+# ==========================================
+# 4. CRUD DE PACIENTES (CREATE, READ, UPDATE, DELETE)
+# ==========================================
 
 @router.post("/", response_model=schemas.Patient, status_code=status.HTTP_201_CREATED)
 def create_patient(
@@ -48,8 +48,8 @@ def create_patient(
 ):
     """
     Crea un nuevo paciente en la base de datos.
-    Solo accesible para roles 'medico' o 'admin'.
     """
+    # Verificamos si el email del paciente ya existe (si se proporcionó)
     if patient_in.email:
         db_patient = db.query(models.Patient).filter(models.Patient.email == patient_in.email).first()
         if db_patient:
@@ -58,24 +58,35 @@ def create_patient(
                 detail="Un paciente con este email ya existe."
             )
     
+    # Creamos el objeto del modelo
     new_patient = models.Patient(**patient_in.model_dump())
+    
     db.add(new_patient)
     db.commit()
     db.refresh(new_patient)
     return new_patient
 
+
 @router.get("/", response_model=List[schemas.Patient])
 def read_patients(
     db: Session = Depends(get_db),
     skip: int = 0,
-    limit: int = 100
+    limit: int = 100,
+    search: str | None = None # ¡Soporte para búsqueda!
 ):
     """
     Obtiene una lista de todos los pacientes.
-    Solo accesible para roles 'medico' o 'admin'.
+    Soporta filtrado por nombre con ?search=...
     """
-    patients = db.query(models.Patient).offset(skip).limit(limit).all()
+    query = db.query(models.Patient)
+    
+    if search:
+        # Filtra por nombre (insensible a mayúsculas/minúsculas)
+        query = query.filter(models.Patient.full_name.ilike(f"%{search}%"))
+        
+    patients = query.offset(skip).limit(limit).all()
     return patients
+
 
 @router.get("/{patient_id}", response_model=schemas.Patient)
 def read_patient(
@@ -85,7 +96,6 @@ def read_patient(
     """
     Obtiene la información detallada de un solo paciente por su ID.
     (Incluye direcciones, citas, notas, signos vitales y archivos).
-    Solo accesible para roles 'medico' o 'admin'.
     """
     db_patient = db.query(models.Patient).filter(models.Patient.id == patient_id).first()
     if db_patient is None:
@@ -95,23 +105,35 @@ def read_patient(
         )
     return db_patient
 
+
 @router.put("/{patient_id}", response_model=schemas.Patient)
 def update_patient(
     patient_id: int,
     patient_in: schemas.PatientUpdate, # Usamos el schema de actualización
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    # Usamos get_current_user para verificar permiso de dueño o medico
+    current_user: models.User = Depends(get_current_user) 
 ):
     """
-    Actualiza la información de un paciente específico por su ID.
-    Solo accesible para roles 'medico' o 'admin'.
+    Actualiza la información de un paciente.
+    - Médicos/Admins: Pueden editar a cualquiera.
+    - Pacientes: Solo pueden editar su propio perfil.
     """
     db_patient = db.query(models.Patient).filter(models.Patient.id == patient_id).first()
     if db_patient is None:
+        raise HTTPException(status_code=404, detail="Paciente no encontrado.")
+
+    # Lógica de permisos extendida
+    is_medico_admin = current_user.role.name in ['medico', 'admin']
+    is_owner = current_user.patient_profile and current_user.patient_profile.id == patient_id
+    
+    if not is_medico_admin and not is_owner:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Paciente no encontrado."
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para editar este perfil."
         )
         
+    # Actualiza solo los campos enviados
     update_data = patient_in.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(db_patient, key, value)
@@ -119,6 +141,7 @@ def update_patient(
     db.commit()
     db.refresh(db_patient)
     return db_patient
+
 
 @router.delete("/{patient_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_patient(
@@ -128,7 +151,6 @@ def delete_patient(
     """
     Elimina un paciente específico por su ID.
     (La BBDD elimina en cascada sus direcciones, citas, notas, etc.).
-    Solo accesible para roles 'medico' o 'admin'.
     """
     db_patient = db.query(models.Patient).filter(models.Patient.id == patient_id).first()
     if db_patient is None:
@@ -141,9 +163,10 @@ def delete_patient(
     db.commit()
     return None
 
-# -----------------
-# 5. Endpoints Anidados: NOTAS MÉDICAS
-# -----------------
+
+# ==========================================
+# 5. ENDPOINTS ANIDADOS: NOTAS MÉDICAS
+# ==========================================
 
 @router.post(
     "/{patient_id}/notes", 
@@ -165,6 +188,7 @@ def create_medical_note_for_patient(
         patient_id=patient_id,
         doctor_id=current_user.id 
     )
+    
     db.add(new_note)
     db.commit()
     db.refresh(new_note)
@@ -227,9 +251,10 @@ def delete_medical_note(
     db.commit()
     return None
 
-# -----------------
-# 6. Endpoints Anidados: SIGNOS VITALES
-# -----------------
+
+# ==========================================
+# 6. ENDPOINTS ANIDADOS: SIGNOS VITALES
+# ==========================================
 
 @router.post(
     "/{patient_id}/vitals", 
@@ -251,6 +276,7 @@ def create_vital_sign_for_patient(
         patient_id=patient_id,
         doctor_id=current_user.id
     )
+    
     db.add(new_vital)
     db.commit()
     db.refresh(new_vital)
@@ -313,9 +339,10 @@ def delete_vital_sign(
     db.commit()
     return None
 
-# -----------------
-# 7. Endpoints Anidados: ARCHIVOS (FOTOS)
-# -----------------
+
+# ==========================================
+# 7. ENDPOINTS ANIDADOS: ARCHIVOS (FOTOS)
+# ==========================================
 
 @router.post(
     "/{patient_id}/files", 
@@ -331,7 +358,6 @@ def upload_file_for_patient(
 ):
     """
     Sube un archivo (foto, PDF) para un paciente específico.
-    Solo accesible para 'medico' o 'admin'.
     """
     db_patient = db.query(models.Patient).filter(models.Patient.id == patient_id).first()
     if db_patient is None:
@@ -374,10 +400,6 @@ def read_files_for_patient(
     patient_id: int,
     db: Session = Depends(get_db)
 ):
-    """
-    Obtiene la lista de archivos de un paciente específico.
-    Solo accesible para 'medico' o 'admin'.
-    """
     db_patient = db.query(models.Patient).filter(models.Patient.id == patient_id).first()
     if db_patient is None:
         raise HTTPException(status_code=404, detail="Paciente no encontrado.")

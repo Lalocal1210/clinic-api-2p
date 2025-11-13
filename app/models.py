@@ -84,17 +84,27 @@ class AppointmentStatus(Base):
     description = Column(Text, nullable=True)
     appointments = relationship("Appointment", back_populates="status")
 
-# --- Modelo de Citas ---
+# --- Modelo de Citas (¡ACTUALIZADO!) ---
 class Appointment(Base):
     __tablename__ = "appointments"
     id = Column(Integer, primary_key=True, index=True)
+    
+    # Claves Foráneas
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     status_id = Column(Integer, ForeignKey("appointment_status.id"), nullable=False, default=1)
+
+    # Datos de la Cita
     appointment_date = Column(TIMESTAMP(timezone=True), nullable=False)
     reason = Column(Text, nullable=True)
-    notes = Column(Text, nullable=True) 
+    notes = Column(Text, nullable=True) # Notas del médico sobre la cita
+    
+    # ¡NUEVA COLUMNA!
+    cancellation_reason = Column(Text, nullable=True) # Motivo si status_id = 4
+    
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+    # Relaciones
     patient = relationship("Patient", back_populates="appointments")
     doctor = relationship("User", foreign_keys=[doctor_id]) 
     status = relationship("AppointmentStatus", back_populates="appointments")
@@ -138,14 +148,14 @@ class MedicalFile(Base):
     patient = relationship("Patient", back_populates="files")
     uploader = relationship("User", foreign_keys=[uploader_id])
 
-# --- Modelo de Tipos de Notificación (¡El que faltaba!) ---
+# --- Modelo de Tipos de Notificación ---
 class NotificationType(Base):
     __tablename__ = "notification_types"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False)
     description = Column(Text, nullable=True)
 
-# --- Modelo de Notificaciones (¡El que faltaba!) ---
+# --- Modelo de Notificaciones ---
 class Notification(Base):
     __tablename__ = "notifications"
     id = Column(Integer, primary_key=True, index=True)
@@ -157,7 +167,7 @@ class Notification(Base):
     user = relationship("User", foreign_keys=[user_id])
     notification_type = relationship("NotificationType")
 
-# --- Modelo de Configuración de Usuario (¡El que faltaba!) ---
+# --- Modelo de Configuración de Usuario ---
 class UserSettings(Base):
     __tablename__ = "user_settings"
     id = Column(Integer, primary_key=True, index=True)

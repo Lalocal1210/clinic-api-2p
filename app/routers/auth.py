@@ -31,7 +31,7 @@ def get_db():
     finally:
         db.close()
 
-# 4. El Endpoint de Registro
+# 4. El Endpoint de Registro (¡ACTUALIZADO!)
 @router.post(
     "/register", 
     response_model=schemas.User, 
@@ -43,50 +43,56 @@ def create_user(
 ):
     """
     Crea un nuevo usuario en la base de datos.
-    - **user_in**: Datos de entrada validados por Pydantic (email, password, etc.).
-    - **db**: Sesión de BBDD inyectada por la dependencia `get_db`.
+    Si el rol es 'paciente', crea también su perfil de paciente vinculado.
     """
     
     # Hasheamos la contraseña
     hashed_password = security.get_password_hash(user_in.password)
     
     # Creamos el objeto del modelo SQLAlchemy
+    # Por defecto, todos se registran como pacientes (role_id=3)
     db_user = models.User(
         full_name=user_in.full_name,
         email=user_in.email,
         phone=user_in.phone,
         password_hash=hashed_password,
-        role_id=3  # Asignamos 'paciente' (ID=3) por defecto
+        role_id=3  # 3 = paciente
     )
     
     # Guardamos en la BBDD
     try:
         db.add(db_user)
         db.commit()
-        db.refresh(db_user) # Refresca el objeto para obtener el ID creado
+        db.refresh(db_user) # Refresca para obtener el ID creado
+        
+        # --- ¡NUEVA LÓGICA! ---
+        # Si el rol es paciente (ID 3), crea su perfil de paciente vinculado
+        if db_user.role_id == 3:
+            new_patient_profile = models.Patient(
+                full_name=db_user.full_name,
+                email=db_user.email,
+                phone=db_user.phone,
+                user_id=db_user.id  # ¡Aquí está el vínculo!
+            )
+            db.add(new_patient_profile)
+            db.commit()
+            db.refresh(db_user) # Refresca el usuario de nuevo para cargar la relación
+        
         return db_user
     
     except IntegrityError as e:
-        # Si el error es por la clave foránea (rol no existe)
-        if "foreign key constraint" in str(e).lower():
-             db.rollback()
-             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Error: El rol de 'paciente' no está configurado en la BBDD."
-            )
-        # Si el error es por email duplicado
-        elif "unique constraint" in str(e).lower():
-             db.rollback()
+        db.rollback()
+        # Verificamos si el error es por email duplicado
+        if "unique constraint" in str(e).lower():
              raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="El correo electrónico ya está registrado."
             )
-        # Otro error de integridad
+        # Otro error (ej. rol_id no existe)
         else:
-            db.rollback()
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Error de integridad de la base de datos."
+                status_code=status.HTTP_500,
+                detail=f"Error de base de datos: {e}"
             )
 
 # 5. El Endpoint de Login
@@ -103,8 +109,6 @@ def login_for_access_token(
     """
     
     # 1. Buscamos al usuario por su email
-    # ¡Importante! 'form_data.username' es el campo que usa
-    # OAuth2, pero nosotros lo trataremos como el email.
     user = db.query(models.User).filter(
         models.User.email == form_data.username
     ).first()
@@ -118,8 +122,7 @@ def login_for_access_token(
         )
 
     # 3. Si todo es correcto, creamos el token
-    # El 'sub' (subject) es la identidad del token
-    # Es crucial añadir el rol aquí para usarlo en los permisos
+    # Añadimos el email y el rol al token
     access_token_data = {"sub": user.email, "role": user.role.name}
     access_token = security.create_access_token(data=access_token_data)
 
