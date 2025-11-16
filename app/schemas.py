@@ -1,7 +1,7 @@
 # --- app/schemas.py ---
 
 from pydantic import BaseModel, EmailStr
-from datetime import date, datetime
+from datetime import date, datetime, time # <-- ¡IMPORTANTE! Asegúrate de incluir 'time'
 
 # -----------------
 # 1. Esquemas de Catálogos y Autenticación
@@ -78,6 +78,10 @@ class RoleUpdate(BaseModel):
     """Esquema para actualizar el rol de un usuario (Admin)."""
     role_id: int
 
+class UserStatusUpdate(BaseModel):
+    """Esquema para activar o desactivar un usuario."""
+    is_active: bool
+
 class PatientBase(BaseModel):
     full_name: str
     gender: str | None = None
@@ -88,12 +92,38 @@ class PatientBase(BaseModel):
 class PatientCreate(PatientBase):
     pass
 
-class PatientUpdate(BaseModel):
-    full_name: str | None = None
-    gender: str | None = None
-    birth_date: date | None = None
-    email: EmailStr | None = None
+# --- Esquemas de Actualización de Paciente ---
+
+class PatientProfileUpdate(BaseModel):
+    """
+    Esquema para que el PACIENTE actualice su propio perfil.
+    (No incluye género, nombre, email ni fecha de nacimiento).
+    """
     phone: str | None = None
+    
+    # Médicos
+    allergies: str | None = None
+    current_medications: str | None = None
+    chronic_conditions: str | None = None
+    blood_type: str | None = None
+    height_cm: int | None = None
+
+    # Emergencia
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    
+    # Personal
+    marital_status: str | None = None
+
+class PatientAdminUpdate(PatientProfileUpdate):
+    """
+    Esquema para que el ADMIN/MÉDICO actualice un perfil.
+    Hereda todo lo del paciente Y ADEMÁS permite editar datos sensibles.
+    """
+    full_name: str | None = None
+    email: EmailStr | None = None
+    gender: str | None = None
+    birth_date: date | None = None # Admin sí puede editar fecha
 
 class AppointmentBase(BaseModel):
     appointment_date: datetime
@@ -153,6 +183,51 @@ class NotificationBase(BaseModel):
     message: str
     is_read: bool
 
+# --- Esquemas de Seguridad ---
+class PasswordChange(BaseModel):
+    """Esquema para cambiar la contraseña."""
+    old_password: str
+    new_password: str
+
+class Message(BaseModel):
+    """Esquema para un mensaje de respuesta simple."""
+    detail: str
+
+# --- ¡NUEVOS ESQUEMAS DE DISPONIBILIDAD! ---
+
+class DoctorAvailabilityBase(BaseModel):
+    day_of_week: int # 0=Lunes, ... 6=Domingo
+    start_time: time # 09:00:00
+    end_time: time   # 17:00:00
+
+class DoctorAvailabilityCreate(DoctorAvailabilityBase):
+    pass
+
+class DoctorAvailability(DoctorAvailabilityBase):
+    id: int
+    doctor_id: int
+    class Config:
+        from_attributes = True
+
+class BlockedTimeBase(BaseModel):
+    start_datetime: datetime
+    end_datetime: datetime
+    reason: str | None = None
+
+class BlockedTimeCreate(BlockedTimeBase):
+    pass
+
+class BlockedTime(BlockedTimeBase):
+    id: int
+    doctor_id: int
+    class Config:
+        from_attributes = True
+
+class TimeSlot(BaseModel):
+    """Esquema para devolver un horario disponible al frontend"""
+    time: str # "09:00"
+    is_available: bool
+
 # -----------------
 # 5. Esquemas Simples y Públicos (Anidados)
 # -----------------
@@ -174,7 +249,7 @@ class AppointmentSimple(BaseModel):
 
 class UserPublic(UserBase):
     """
-    ¡IMPORTANTE! Esquema de Usuario que INCLUYE el ID.
+    Esquema de Usuario que INCLUYE el ID.
     Se usa para mostrar la info del doctor dentro de una cita.
     """
     id: int
@@ -188,7 +263,7 @@ class UserPublic(UserBase):
 class MedicalNote(MedicalNoteBase):
     id: int
     created_at: datetime
-    doctor: UserPublic # Usamos UserPublic para ver el ID del doctor
+    doctor: UserPublic 
     patient_id: int 
     class Config:
         from_attributes = True
@@ -225,6 +300,18 @@ class Patient(PatientBase):
     medical_notes: list[MedicalNote] = []
     vital_signs: list[VitalSign] = []
     files: list[MedicalFile] = []
+    temporary_password: str | None = None 
+    
+    # --- Campos de perfil extendido ---
+    allergies: str | None = None
+    current_medications: str | None = None
+    chronic_conditions: str | None = None
+    blood_type: str | None = None
+    height_cm: int | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    marital_status: str | None = None
+    
     class Config:
         from_attributes = True
 
@@ -232,7 +319,7 @@ class Appointment(AppointmentBase):
     """Esquema 'Appointment' completo"""
     id: int
     patient: PatientSimple      
-    doctor: UserPublic          # <-- ¡CLAVE! Usa UserPublic para enviar el ID del doctor
+    doctor: UserPublic          
     status: AppointmentStatus   
     cancellation_reason: str | None = None
     class Config:

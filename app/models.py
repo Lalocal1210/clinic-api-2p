@@ -1,7 +1,5 @@
-# --- app/models.py ---
-
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, TIMESTAMP, ForeignKey, Date, 
+    Column, Integer, String, Text, Boolean, TIMESTAMP, ForeignKey, Date, Time, # <-- ¡Añadimos Time!
     CheckConstraint
 )
 from sqlalchemy.orm import relationship
@@ -41,6 +39,11 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
+    # --- ¡NUEVAS RELACIONES DE DISPONIBILIDAD (Para Médicos)! ---
+    availabilities = relationship("DoctorAvailability", back_populates="doctor", cascade="all, delete-orphan")
+    blocked_times = relationship("BlockedTime", back_populates="doctor", cascade="all, delete-orphan")
+
+
 # --- Modelo de Pacientes ---
 class Patient(Base):
     __tablename__ = "patients"
@@ -62,6 +65,16 @@ class Patient(Base):
     medical_notes = relationship("MedicalNote", back_populates="patient", cascade="all, delete-orphan")
     vital_signs = relationship("VitalSign", back_populates="patient", cascade="all, delete-orphan")
     files = relationship("MedicalFile", back_populates="patient", cascade="all, delete-orphan")
+    
+    # Campos de perfil extendido
+    allergies = Column(Text, nullable=True)
+    current_medications = Column(Text, nullable=True)
+    chronic_conditions = Column(Text, nullable=True)
+    blood_type = Column(String(10), nullable=True)
+    height_cm = Column(Integer, nullable=True)
+    emergency_contact_name = Column(String(100), nullable=True)
+    emergency_contact_phone = Column(String(20), nullable=True)
+    marital_status = Column(String(50), nullable=True)
 
 # --- Modelo de Direcciones ---
 class Address(Base):
@@ -84,27 +97,18 @@ class AppointmentStatus(Base):
     description = Column(Text, nullable=True)
     appointments = relationship("Appointment", back_populates="status")
 
-# --- Modelo de Citas (¡ACTUALIZADO!) ---
+# --- Modelo de Citas ---
 class Appointment(Base):
     __tablename__ = "appointments"
     id = Column(Integer, primary_key=True, index=True)
-    
-    # Claves Foráneas
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     status_id = Column(Integer, ForeignKey("appointment_status.id"), nullable=False, default=1)
-
-    # Datos de la Cita
     appointment_date = Column(TIMESTAMP(timezone=True), nullable=False)
     reason = Column(Text, nullable=True)
-    notes = Column(Text, nullable=True) # Notas del médico sobre la cita
-    
-    # ¡NUEVA COLUMNA!
-    cancellation_reason = Column(Text, nullable=True) # Motivo si status_id = 4
-    
+    notes = Column(Text, nullable=True) 
+    cancellation_reason = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
-
-    # Relaciones
     patient = relationship("Patient", back_populates="appointments")
     doctor = relationship("User", foreign_keys=[doctor_id]) 
     status = relationship("AppointmentStatus", back_populates="appointments")
@@ -136,7 +140,7 @@ class VitalSign(Base):
     patient = relationship("Patient", back_populates="vital_signs")
     doctor = relationship("User", foreign_keys=[doctor_id])
 
-# --- Modelo de Archivos Médicos (Fotos) ---
+# --- Modelo de Archivos Médicos ---
 class MedicalFile(Base):
     __tablename__ = "medical_files"
     id = Column(Integer, primary_key=True, index=True)
@@ -176,3 +180,39 @@ class UserSettings(Base):
     language = Column(String(10), default='es')
     notifications_enabled = Column(Boolean, default=True)
     user = relationship("User")
+
+
+# --- ¡NUEVOS MODELOS DE DISPONIBILIDAD! ---
+
+class DoctorAvailability(Base):
+    """
+    Define el horario base de un médico.
+    Ej: Lunes (day=0) de 09:00 a 17:00
+    """
+    __tablename__ = "doctor_availability"
+    id = Column(Integer, primary_key=True, index=True)
+    
+    doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    day_of_week = Column(Integer, nullable=False) # 0=Lunes, 6=Domingo
+    start_time = Column(Time, nullable=False)     # Ej. 09:00:00
+    end_time = Column(Time, nullable=False)       # Ej. 17:00:00
+    
+    is_active = Column(Boolean, default=True)
+
+    doctor = relationship("User", back_populates="availabilities")
+
+class BlockedTime(Base):
+    """
+    Define excepciones de tiempo (vacaciones, días libres).
+    """
+    __tablename__ = "blocked_time"
+    id = Column(Integer, primary_key=True, index=True)
+    
+    doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    start_datetime = Column(TIMESTAMP(timezone=True), nullable=False)
+    end_datetime = Column(TIMESTAMP(timezone=True), nullable=False)
+    reason = Column(String(255), nullable=True) # Ej. "Vacaciones"
+
+    doctor = relationship("User", back_populates="blocked_times")
