@@ -10,7 +10,6 @@ from .. import models, schemas, security
 from ..database import SessionLocal, engine
 
 # 1. Creación de Tablas
-# (SQLAlchemy revisa si las tablas de models.py existen, si no, las crea)
 models.Base.metadata.create_all(bind=engine)
 
 # 2. Creamos un 'router'
@@ -31,7 +30,7 @@ def get_db():
     finally:
         db.close()
 
-# 4. El Endpoint de Registro (¡ACTUALIZADO!)
+# 4. El Endpoint de Registro (¡ACTUALIZADO Y CORREGIDO!)
 @router.post(
     "/register", 
     response_model=schemas.User, 
@@ -49,14 +48,14 @@ def create_user(
     # Hasheamos la contraseña
     hashed_password = security.get_password_hash(user_in.password)
     
-    # Creamos el objeto del modelo SQLAlchemy
-    # Por defecto, todos se registran como pacientes (role_id=3)
+    # Creamos el objeto del modelo SQLAlchemy (Tabla 'users')
     db_user = models.User(
         full_name=user_in.full_name,
         email=user_in.email,
         phone=user_in.phone,
         password_hash=hashed_password,
-        role_id=3  # 3 = paciente
+        role_id=3,  # 3 = paciente por defecto
+        is_active=True
     )
     
     # Guardamos en la BBDD
@@ -65,42 +64,42 @@ def create_user(
         db.commit()
         db.refresh(db_user) # Refresca para obtener el ID creado
         
-        # --- ¡NUEVA LÓGICA! ---
-        # Si el rol es paciente (ID 3), crea su perfil de paciente vinculado
+        # --- ¡LÓGICA DE VINCULACIÓN! ---
         if db_user.role_id == 3:
             new_patient_profile = models.Patient(
                 full_name=db_user.full_name,
                 email=db_user.email,
                 phone=db_user.phone,
-                user_id=db_user.id  # ¡Aquí está el vínculo!
+                birth_date=user_in.birth_date, # Guardamos la fecha
+                user_id=db_user.id  # Vinculamos al usuario
             )
             db.add(new_patient_profile)
             db.commit()
-            db.refresh(db_user) # Refresca el usuario de nuevo para cargar la relación
+            db.refresh(db_user) # Refresca para cargar la relación
         
         return db_user
     
     except IntegrityError as e:
         db.rollback()
-        # Verificamos si el error es por email duplicado
-        if "unique constraint" in str(e).lower():
+        error_msg = str(e).lower()
+        # CORRECCIÓN 1: Detectamos el error tanto en inglés como en español
+        if "unique constraint" in error_msg or "llave duplicada" in error_msg or "unicidad" in error_msg:
              raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="El correo electrónico ya está registrado."
             )
-        # Otro error (ej. rol_id no existe)
+        # CORRECCIÓN 2: Arreglado el typo HTTP_500 -> HTTP_500_INTERNAL_SERVER_ERROR
         else:
+            print(f"Error desconocido de BBDD: {e}") # Log para debug
             raise HTTPException(
-                status_code=status.HTTP_500,
-                detail=f"Error de base de datos: {e}"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error interno al procesar el registro."
             )
 
 # 5. El Endpoint de Login
 @router.post("/login", response_model=schemas.Token)
 def login_for_access_token(
     db: Session = Depends(get_db),
-    # 'OAuth2PasswordRequestForm' es una clase especial de FastAPI
-    # que solo espera un 'username' y un 'password'
     form_data: OAuth2PasswordRequestForm = Depends()
 ):
     """
@@ -108,23 +107,18 @@ def login_for_access_token(
     Recibe un 'username' y 'password' y devuelve un Token JWT.
     """
     
-    # 1. Buscamos al usuario por su email
     user = db.query(models.User).filter(
         models.User.email == form_data.username
     ).first()
 
-    # 2. Si el usuario no existe O la contraseña es incorrecta
     if not user or not security.verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Correo electrónico o contraseña incorrectos",
-            headers={"WWW-Authenticate": "Bearer"}, # Estándar de autenticación
+            headers={"WWW-Authenticate": "Bearer"}, 
         )
 
-    # 3. Si todo es correcto, creamos el token
-    # Añadimos el email y el rol al token
     access_token_data = {"sub": user.email, "role": user.role.name}
     access_token = security.create_access_token(data=access_token_data)
 
-    # 4. Devolvemos el token
     return {"access_token": access_token, "token_type": "bearer"}

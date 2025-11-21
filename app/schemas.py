@@ -1,7 +1,5 @@
-# --- app/schemas.py ---
-
 from pydantic import BaseModel, EmailStr
-from datetime import date, datetime, time # <-- ¡IMPORTANTE! Asegúrate de incluir 'time'
+from datetime import date, datetime, time 
 
 # -----------------
 # 1. Esquemas de Catálogos y Autenticación
@@ -73,6 +71,8 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str 
+    # --- ¡CAMBIO AQUÍ! ---
+    birth_date: date | None = None # <--- AGREGADO: Necesario para el registro
 
 class RoleUpdate(BaseModel):
     """Esquema para actualizar el rol de un usuario (Admin)."""
