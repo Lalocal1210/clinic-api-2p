@@ -1,7 +1,7 @@
 import os
 import shutil
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from typing import List
@@ -9,20 +9,16 @@ from typing import List
 from .. import models, schemas, security
 from ..database import SessionLocal
 
-# Configuración de subida de imágenes
-UPLOAD_DIR = "static/profile_pics"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# Esquema de seguridad
+# 1. Creamos el "esquema" de seguridad
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
+# 2. Creamos el router
 router = APIRouter(
-    prefix="/users",
-    tags=["Users"]
+    prefix="/users",  # Todos los endpoints aquí empezarán con /users
+    tags=["Users"]    # Los agrupa como "Users" en los /docs
 )
 
-# --- DEPENDENCIAS ---
-
+# 3. Dependencia para la BBDD
 def get_db():
     db = SessionLocal()
     try:
@@ -30,13 +26,16 @@ def get_db():
     finally:
         db.close()
 
+# 4. Dependencia de Seguridad (¡El Guardia Principal!)
 def get_current_user(
     token: str = Depends(oauth2_scheme), 
     db: Session = Depends(get_db)
 ) -> models.User:
     """
-    Valida el token JWT y recupera el usuario actual.
+    Decodifica el token, encuentra al usuario en la BBDD y lo devuelve.
+    Si algo falla (token inválido, usuario no existe), lanza un error 401.
     """
+    
     payload = security.decode_access_token(token)
     if payload is None:
         raise HTTPException(
@@ -64,65 +63,30 @@ def get_current_user(
     
     return user
 
-# --- ENDPOINTS DE USUARIO ---
 
+# 5. El Endpoint Protegido (Ver mi propio perfil)
 @router.get("/me", response_model=schemas.User)
 def read_users_me(
     current_user: models.User = Depends(get_current_user)
 ):
     """
-    Obtiene la información del usuario logueado.
+    Devuelve la información del usuario actualmente autenticado.
     """
     return current_user
 
-@router.post("/me/photo", response_model=schemas.User)
-async def upload_profile_photo(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    """
-    Sube una foto de perfil para el usuario actual.
-    La guarda en 'static/profile_pics' y actualiza la URL en la BBDD.
-    """
-    
-    # 1. Validar que sea una imagen
-    if not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="El archivo debe ser una imagen válida (png, jpg, jpeg).")
-    
-    # 2. Generar nombre único para evitar colisiones
-    file_ext = file.filename.split('.')[-1]
-    file_name = f"user_{current_user.id}_{uuid.uuid4()}.{file_ext}"
-    file_path = os.path.join(UPLOAD_DIR, file_name)
-    
-    # 3. Guardar el archivo físico
-    try:
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al guardar la imagen: {e}")
-    finally:
-        await file.close()
-        
-    # 4. Actualizar la base de datos con la ruta relativa
-    # Esta ruta es la que el frontend usará: http://.../static/profile_pics/nombre.jpg
-    url_path = f"/static/profile_pics/{file_name}"
-    
-    current_user.profile_picture = url_path
-    db.commit()
-    db.refresh(current_user)
-    
-    return current_user
-
-@router.get("/doctors", response_model=List[schemas.User])
+# 6. Endpoint Público para ver Médicos
+@router.get(
+    "/doctors", 
+    response_model=List[schemas.User],
+)
 def get_doctors_list(db: Session = Depends(get_db)):
     """
-    Lista pública de todos los médicos (rol ID 2).
-    Usado para el selector en 'Agendar Cita'.
+    Obtiene una lista pública de todos los médicos (role_id=2).
     """
     doctors = db.query(models.User).filter(models.User.role_id == 2).all()
     return doctors
 
+# 7. Endpoint Protegido (Cambiar mi propia contraseña)
 @router.put("/me/change-password", response_model=schemas.Message)
 def change_password(
     pass_in: schemas.PasswordChange,
@@ -130,23 +94,24 @@ def change_password(
     current_user: models.User = Depends(get_current_user)
 ):
     """
-    Cambio de contraseña para el usuario logueado.
+    Permite al usuario autenticado cambiar su propia contraseña.
     """
-    # 1. Verificar la antigua
+    
+    # 1. Verificar que la contraseña ANTIGUA sea correcta
     if not security.verify_password(pass_in.old_password, current_user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="La contraseña antigua es incorrecta."
         )
         
-    # 2. Validar longitud mínima
-    if len(pass_in.new_password) < 4:
+    # 2. Verificar que la nueva contraseña no esté vacía
+    if not pass_in.new_password or len(pass_in.new_password) < 4:
          raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="La nueva contraseña es muy corta."
         )
 
-    # 3. Actualizar
+    # 3. Hashear y guardar la NUEVA contraseña
     new_hashed_password = security.get_password_hash(pass_in.new_password)
     current_user.password_hash = new_hashed_password
     
@@ -154,26 +119,77 @@ def change_password(
     
     return {"detail": "Contraseña actualizada correctamente."}
 
-# --- DEPENDENCIAS DE ROLES (Para usar en otros routers) ---
+# 8. Endpoint para SUBIR FOTO DE PERFIL (¡NUEVO!)
+@router.post("/me/photo", response_model=schemas.User)
+def upload_profile_picture(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Sube una foto de perfil para el usuario actual (Médico, Admin o Paciente).
+    """
+    # 1. Validar que sea imagen
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="El archivo debe ser una imagen.")
+
+    # 2. Crear directorio si no existe
+    upload_dir = "static/profiles"
+    os.makedirs(upload_dir, exist_ok=True)
+
+    # 3. Generar nombre único
+    file_extension = os.path.splitext(file.filename)[1]
+    file_name = f"user_{current_user.id}_{uuid.uuid4()}{file_extension}"
+    file_path = os.path.join(upload_dir, file_name)
+
+    # 4. Guardar archivo físico
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al guardar imagen: {e}")
+    finally:
+        file.file.close()
+
+    # 5. Actualizar base de datos (guardamos la URL relativa)
+    # Usamos /static/profiles/... para que sea accesible web
+    url_path = f"/static/profiles/{file_name}"
+    
+    current_user.profile_picture = url_path
+    db.commit()
+    db.refresh(current_user)
+    
+    return current_user
+
+
+# -------------------------------------
+# 9. DEPENDENCIAS DE AUTORIZACIÓN (ROLES)
+# -------------------------------------
 
 def get_current_admin_user(
     current_user: models.User = Depends(get_current_user)
 ) -> models.User:
-    """Valida que el usuario sea Admin."""
+    """
+    Dependencia que verifica que el usuario actual sea 'admin'.
+    Si no lo es, lanza un error 403 Forbidden.
+    """
     if current_user.role.name != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permisos de Administrador."
+            detail="No tienes permisos para realizar esta acción. Se requiere ser Administrador."
         )
     return current_user
 
 def get_current_medico_or_admin_user(
     current_user: models.User = Depends(get_current_user)
 ) -> models.User:
-    """Valida que el usuario sea Médico o Admin."""
+    """
+    Dependencia que verifica que el usuario actual sea 'medico' O 'admin'.
+    Si no lo es, lanza un error 403 Forbidden.
+    """
     if current_user.role.name not in ("medico", "admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permisos suficientes (Médico/Admin)."
+            detail="No tienes permisos para realizar esta acción. Se requiere ser Médico o Administrador."
         )
     return current_user

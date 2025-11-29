@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, TIMESTAMP, ForeignKey, Date, Time, # <-- ¡Añadimos Time!
+    Column, Integer, String, Text, Boolean, TIMESTAMP, ForeignKey, Date, Time, 
     CheckConstraint
 )
 from sqlalchemy.orm import relationship
@@ -25,6 +25,10 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     phone = Column(String(20), nullable=True)
     is_active = Column(Boolean, default=True)
+    
+    # --- ¡NUEVO CAMPO: FOTO DE PERFIL! ---
+    profile_picture = Column(String(255), nullable=True) 
+    
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
     
     # Relación con Rol
@@ -39,7 +43,7 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
-    # --- ¡NUEVAS RELACIONES DE DISPONIBILIDAD (Para Médicos)! ---
+    # Relaciones de Disponibilidad (Para Médicos)
     availabilities = relationship("DoctorAvailability", back_populates="doctor", cascade="all, delete-orphan")
     blocked_times = relationship("BlockedTime", back_populates="doctor", cascade="all, delete-orphan")
 
@@ -182,7 +186,7 @@ class UserSettings(Base):
     user = relationship("User")
 
 
-# --- ¡NUEVOS MODELOS DE DISPONIBILIDAD! ---
+# --- NUEVOS MODELOS DE DISPONIBILIDAD ---
 
 class DoctorAvailability(Base):
     """
